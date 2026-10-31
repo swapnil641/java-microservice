@@ -1,0 +1,12 @@
+# Maven build directory
+target/
+
+# Generated release artifacts
+releases/*.jar
+
+# IDE files
+.idea/
+.vscode/
+
+# Logs
+*.log
