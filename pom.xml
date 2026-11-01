@@ -14,7 +14,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>java-microservice</artifactId>
-    <version>2.1.0</version>
+    <version>2.2.0</version>
 
     <name>java-microservice</name>
     <description>My first Java microservice</description>
