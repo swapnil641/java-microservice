@@ -25,10 +25,46 @@ pipeline {
             }
         }
 
+        stage('Get Application Version') {
+            steps {
+                script {
+                    env.APP_VERSION = sh(
+                        script: """
+                            python3 -c "import xml.etree.ElementTree as E; r=E.parse('pom.xml').getroot(); ns={'m':'http://maven.apache.org/POM/4.0.0'}; print(r.findtext('m:version', namespaces=ns))"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Application version: ${env.APP_VERSION}"
+                }
+            }
+        }
+
         stage('Archive JAR') {
             steps {
                 archiveArtifacts artifacts: 'target/*.jar',
                                  fingerprint: true
+            }
+        }
+
+        stage('Upload JAR to S3') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id',
+                           variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key',
+                           variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh '''
+                        set +x
+
+                        aws s3 cp \
+                          "target/java-microservice-${APP_VERSION}.jar" \
+                          "s3://java-microservice-artifacts-290952542648/java-microservice/${APP_VERSION}/java-microservice-${APP_VERSION}.jar" \
+                          --region ap-south-1 \
+                          --only-show-errors
+                    '''
+                }
             }
         }
     }
