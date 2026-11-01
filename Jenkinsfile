@@ -49,22 +49,15 @@ pipeline {
 
         stage('Upload JAR to S3') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id',
-                           variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key',
-                           variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
-                    sh '''
-                        set +x
+                sh '''
+                    set -e
 
-                        aws s3 cp \
-                          "target/java-microservice-${APP_VERSION}.jar" \
-                          "s3://java-microservice-artifacts-290952542648/java-microservice/${APP_VERSION}/java-microservice-${APP_VERSION}.jar" \
-                          --region ap-south-1 \
-                          --only-show-errors
-                    '''
-                }
+                    aws s3 cp \
+                      "target/java-microservice-${APP_VERSION}.jar" \
+                      "s3://java-microservice-artifacts-2026-290952/java-microservice/${APP_VERSION}/java-microservice-${APP_VERSION}.jar" \
+                      --region ap-southeast-2 \
+                      --only-show-errors
+                '''
             }
         }
     }
