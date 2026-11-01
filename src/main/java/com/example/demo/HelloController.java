@@ -10,4 +10,9 @@ public class HelloController {
     public String hello() {
         return "Hello! My first Java Microservice is running.";
     }
+
+    @GetMapping("/health")
+    public String health() {
+        return "Java Microservice is UP";
+    }
 }
