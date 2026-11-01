@@ -8,7 +8,7 @@ public class HelloController {
 
     @GetMapping("/hello")
     public String hello() {
-        return "Hello! My first Java Microservice is running.";
+        return "Hello! Jenkins automatically builds my Java Microservice!";
     }
 
     @GetMapping("/health")
