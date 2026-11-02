@@ -1,5 +1,7 @@
 pipeline {
-    agent any
+    agent {
+        label 'ec2-java-agent'
+    }
 
     tools {
         jdk 'JDK21'
@@ -9,7 +11,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                echo 'Source code is already checked out from GitHub'
+                echo 'Source code is checked out on the temporary EC2 agent'
             }
         }
 
