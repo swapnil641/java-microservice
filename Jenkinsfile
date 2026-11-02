@@ -1,6 +1,15 @@
+
 pipeline {
     agent {
         label 'ec2-java-agent'
+    }
+
+    parameters {
+        string(
+            name: 'RELEASE_VERSION',
+            defaultValue: '2.3.0',
+            description: 'Enter application version (example: 2.3.0)'
+        )
     }
 
     tools {
@@ -15,6 +24,26 @@ pipeline {
             }
         }
 
+        stage('Validate and Set Version') {
+            steps {
+                script {
+                    env.APP_VERSION = params.RELEASE_VERSION.trim()
+
+                    if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
+                        error('Invalid version! Use format like 2.3.0 or 2.4.1')
+                    }
+
+                    echo "Setting application version to ${env.APP_VERSION}"
+                }
+
+                sh '''
+                    mvn -B versions:set \
+                      -DnewVersion="$APP_VERSION" \
+                      -DgenerateBackupPoms=false
+                '''
+            }
+        }
+
         stage('Build') {
             steps {
                 sh 'mvn clean package'
@@ -24,21 +53,6 @@ pipeline {
         stage('Test') {
             steps {
                 sh 'mvn test'
-            }
-        }
-
-        stage('Get Application Version') {
-            steps {
-                script {
-                    env.APP_VERSION = sh(
-                        script: """
-                            python3 -c "import xml.etree.ElementTree as E; r=E.parse('pom.xml').getroot(); ns={'m':'http://maven.apache.org/POM/4.0.0'}; print(r.findtext('m:version', namespaces=ns))"
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Application version: ${env.APP_VERSION}"
-                }
             }
         }
 
@@ -66,7 +80,7 @@ pipeline {
 
     post {
         success {
-            echo 'Java Microservice pipeline completed successfully!'
+            echo "Java Microservice ${env.APP_VERSION} pipeline completed successfully!"
         }
 
         failure {
