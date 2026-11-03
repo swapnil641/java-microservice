@@ -50,7 +50,7 @@ pipeline {
                 script {
                     env.APP_VERSION = params.RELEASE_VERSION.trim()
 
-                    if (!(env.APP_VERSION ==~ /^[0-9]+\\.[0-9]+\\.[0-9]+$/)) {
+                    if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
                         error('Invalid version! Use format like 2.3.0 or 2.4.1')
                     }
 
