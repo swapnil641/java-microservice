@@ -1,4 +1,3 @@
-
 pipeline {
     agent {
         label 'ec2-java-agent'
@@ -24,12 +23,28 @@ pipeline {
             }
         }
 
+        stage('Verify Docker on EC2 Agent') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "Checking Docker installation..."
+                    docker --version
+
+                    echo "Checking Docker daemon..."
+                    docker info
+
+                    echo "Docker verification successful!"
+                '''
+            }
+        }
+
         stage('Validate and Set Version') {
             steps {
                 script {
                     env.APP_VERSION = params.RELEASE_VERSION.trim()
 
-                    if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
+                    if (!(env.APP_VERSION ==~ /^[0-9]+\\.[0-9]+\\.[0-9]+$/)) {
                         error('Invalid version! Use format like 2.3.0 or 2.4.1')
                     }
 

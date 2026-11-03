@@ -2,7 +2,9 @@ FROM eclipse-temurin:17-jre
 
 WORKDIR /app
 
-COPY target/java-microservice-1.0.0.jar app.jar
+ARG APP_VERSION
+
+COPY target/java-microservice-${APP_VERSION}.jar app.jar
 
 EXPOSE 8081
 
