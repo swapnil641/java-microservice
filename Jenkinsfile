@@ -1,4 +1,3 @@
-```groovy
 pipeline {
     agent {
         label 'ec2-java-agent'
@@ -104,4 +103,3 @@ pipeline {
         }
     }
 }
-```
