@@ -8,7 +8,7 @@ pipeline {
         string(
             name: 'RELEASE_VERSION',
             defaultValue: '2.3.0',
-            description: 'Enter application release version'
+            description: 'Enter application version (example: 2.3.0)'
         )
     }
 
@@ -18,31 +18,30 @@ pipeline {
     }
 
     environment {
-        AWS_REGION   = 'ap-southeast-2'
+        AWS_REGION = 'ap-southeast-2'
         ECR_REGISTRY = '828874705664.dkr.ecr.ap-southeast-2.amazonaws.com'
-        ECR_REPO     = 'java-microservice'
-        S3_BUCKET    = 'java-microservice-artifacts-2026-290952'
-        APP_VERSION  = ''
-        DOCKER_IMAGE_TAG = ''
+        ECR_REPOSITORY = 'java-microservice'
     }
 
     stages {
-
         stage('Checkout') {
             steps {
-                echo 'Checking out Java Microservice source code...'
-
-                git branch: 'dev',
-                    url: 'https://github.com/swapnil641/java-microservice.git'
+                echo 'Source code is checked out on the temporary EC2 agent'
             }
         }
 
-        stage('Verify Docker') {
+        stage('Verify Docker on EC2 Agent') {
             steps {
                 sh '''
-                    echo "Checking Docker..."
+                    set -e
+
+                    echo "Checking Docker installation..."
                     docker --version
+
+                    echo "Checking Docker daemon..."
                     docker info
+
+                    echo "Docker verification successful!"
                 '''
             }
         }
@@ -50,32 +49,29 @@ pipeline {
         stage('Validate and Set Version') {
             steps {
                 script {
-                    if (!(params.RELEASE_VERSION ==~ /^\d+\.\d+\.\d+$/)) {
-                        error "Invalid version: ${params.RELEASE_VERSION}. Use format X.Y.Z"
+                    env.APP_VERSION = params.RELEASE_VERSION.trim()
+
+                    if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
+                        error('Invalid version! Use format like 2.3.0 or 2.4.1')
                     }
 
-                    env.APP_VERSION = params.RELEASE_VERSION
-                    env.DOCKER_IMAGE_TAG =
-                        "${env.APP_VERSION}-build-${env.BUILD_NUMBER}"
+                    env.DOCKER_IMAGE_TAG = "${env.APP_VERSION}-build-${env.BUILD_NUMBER}"
 
-                    echo "Application Version: ${env.APP_VERSION}"
+                    echo "Application version: ${env.APP_VERSION}"
+                    echo "Docker image tag: ${env.DOCKER_IMAGE_TAG}"
                 }
 
                 sh '''
-                    mvn versions:set \
-                      -DnewVersion=${APP_VERSION} \
+                    mvn -B versions:set \
+                      -DnewVersion="$APP_VERSION" \
                       -DgenerateBackupPoms=false
-
-                    mvn help:evaluate \
-                      -Dexpression=project.version \
-                      -q -DforceStdout
                 '''
             }
         }
 
         stage('Build') {
             steps {
-                sh 'mvn clean package -DskipTests'
+                sh 'mvn clean package'
             }
         }
 
@@ -87,19 +83,21 @@ pipeline {
 
         stage('Archive JAR') {
             steps {
-                archiveArtifacts(
-                    artifacts: 'target/*.jar',
-                    fingerprint: true
-                )
+                archiveArtifacts artifacts: 'target/*.jar',
+                                 fingerprint: true
             }
         }
 
         stage('Upload JAR to S3') {
             steps {
                 sh '''
-                    aws s3 cp target/java-microservice-${APP_VERSION}.jar \
-                    s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/ \
-                    --region ${AWS_REGION}
+                    set -e
+
+                    aws s3 cp \
+                      "target/java-microservice-${APP_VERSION}.jar" \
+                      "s3://java-microservice-artifacts-2026-290952/java-microservice/${APP_VERSION}/java-microservice-${APP_VERSION}.jar" \
+                      --region "$AWS_REGION" \
+                      --only-show-errors
                 '''
             }
         }
@@ -107,11 +105,14 @@ pipeline {
         stage('Login to Amazon ECR') {
             steps {
                 sh '''
+                    set -e
+
                     aws ecr get-login-password \
-                    --region ${AWS_REGION} | \
+                      --region "$AWS_REGION" |
                     docker login \
-                    --username AWS \
-                    --password-stdin ${ECR_REGISTRY}
+                      --username AWS \
+                      --password-stdin \
+                      "$ECR_REGISTRY"
                 '''
             }
         }
@@ -119,10 +120,13 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
+                    set -e
+
                     docker build \
-                    -t ${ECR_REGISTRY}/${ECR_REPO}:${APP_VERSION} \
-                    -t ${ECR_REGISTRY}/${ECR_REPO}:${DOCKER_IMAGE_TAG} \
-                    .
+                      --build-arg APP_VERSION="$APP_VERSION" \
+                      -t "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION" \
+                      -t "$ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG" \
+                      .
                 '''
             }
         }
@@ -130,35 +134,37 @@ pipeline {
         stage('Push Docker Image to ECR') {
             steps {
                 sh '''
-                    docker push ${ECR_REGISTRY}/${ECR_REPO}:${APP_VERSION}
+                    set -e
 
-                    docker push ${ECR_REGISTRY}/${ECR_REPO}:${DOCKER_IMAGE_TAG}
+                    docker push \
+                      "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION"
+
+                    docker push \
+                      "$ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG"
                 '''
             }
         }
     }
 
     post {
-
         success {
-            echo 'Java Microservice pipeline completed successfully!'
+            echo "Java Microservice ${env.APP_VERSION} pipeline completed successfully!"
 
             emailext(
                 to: 'swapnilpawar641@gmail.com',
                 subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 mimeType: 'text/html',
                 body: """
-                    <h2 style="color:green;">Pipeline Successful</h2>
+                    <h2 style="color:green;">Pipeline Successful!</h2>
 
+                    <p><b>Project:</b> Java Microservice</p>
                     <p><b>Job:</b> ${env.JOB_NAME}</p>
                     <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
-                    <p><b>Release Version:</b> ${env.APP_VERSION}</p>
-                    <p><b>Status:</b> SUCCESS</p>
+                    <p><b>Application Version:</b> ${env.APP_VERSION}</p>
+                    <p><b>Build Status:</b> SUCCESS</p>
 
-                    <p>
-                        <b>Docker Image:</b>
-                        ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.APP_VERSION}
-                    </p>
+                    <p><b>Docker Release Tag:</b> ${env.APP_VERSION}</p>
+                    <p><b>Docker Build Tag:</b> ${env.DOCKER_IMAGE_TAG}</p>
 
                     <p>
                         <a href="${env.BUILD_URL}">
@@ -177,11 +183,13 @@ pipeline {
                 subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 mimeType: 'text/html',
                 body: """
-                    <h2 style="color:red;">Pipeline Failed</h2>
+                    <h2 style="color:red;">Pipeline Failed!</h2>
 
+                    <p><b>Project:</b> Java Microservice</p>
                     <p><b>Job:</b> ${env.JOB_NAME}</p>
                     <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
-                    <p><b>Status:</b> FAILURE</p>
+                    <p><b>Build Status:</b> FAILURE</p>
+                    <p><b>Application Version:</b> ${env.APP_VERSION ?: 'Not available'}</p>
 
                     <p>
                         <a href="${env.BUILD_URL}console">
@@ -193,10 +201,7 @@ pipeline {
         }
 
         always {
-            sh '''
-                docker logout ${ECR_REGISTRY} || true
-            '''
-
+            sh 'docker logout "$ECR_REGISTRY" || true'
             echo 'Pipeline execution finished.'
         }
     }
