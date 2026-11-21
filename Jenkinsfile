@@ -1,3 +1,4 @@
+
 pipeline {
     agent {
         label 'ec2-java-agent'
@@ -7,7 +8,7 @@ pipeline {
         string(
             name: 'RELEASE_VERSION',
             defaultValue: '2.3.0',
-            description: 'Enter application version (example: 2.3.0)'
+            description: 'Enter application release version'
         )
     }
 
@@ -17,30 +18,31 @@ pipeline {
     }
 
     environment {
-        AWS_REGION = 'ap-southeast-2'
+        AWS_REGION   = 'ap-southeast-2'
         ECR_REGISTRY = '828874705664.dkr.ecr.ap-southeast-2.amazonaws.com'
-        ECR_REPOSITORY = 'java-microservice'
+        ECR_REPO     = 'java-microservice'
+        S3_BUCKET    = 'java-microservice-artifacts-2026-290952'
+        APP_VERSION  = ''
+        DOCKER_IMAGE_TAG = ''
     }
 
     stages {
+
         stage('Checkout') {
             steps {
-                echo 'Source code is checked out on the temporary EC2 agent'
+                echo 'Checking out Java Microservice source code...'
+
+                git branch: 'dev',
+                    url: 'https://github.com/swapnil641/java-microservice.git'
             }
         }
 
-        stage('Verify Docker on EC2 Agent') {
+        stage('Verify Docker') {
             steps {
                 sh '''
-                    set -e
-
-                    echo "Checking Docker installation..."
+                    echo "Checking Docker..."
                     docker --version
-
-                    echo "Checking Docker daemon..."
                     docker info
-
-                    echo "Docker verification successful!"
                 '''
             }
         }
@@ -48,29 +50,32 @@ pipeline {
         stage('Validate and Set Version') {
             steps {
                 script {
-                    env.APP_VERSION = params.RELEASE_VERSION.trim()
-
-                    if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
-                        error('Invalid version! Use format like 2.3.0 or 2.4.1')
+                    if (!(params.RELEASE_VERSION ==~ /^\d+\.\d+\.\d+$/)) {
+                        error "Invalid version: ${params.RELEASE_VERSION}. Use format X.Y.Z"
                     }
 
-                    env.DOCKER_IMAGE_TAG = "${env.APP_VERSION}-build-${env.BUILD_NUMBER}"
+                    env.APP_VERSION = params.RELEASE_VERSION
+                    env.DOCKER_IMAGE_TAG =
+                        "${env.APP_VERSION}-build-${env.BUILD_NUMBER}"
 
-                    echo "Application version: ${env.APP_VERSION}"
-                    echo "Docker image tag: ${env.DOCKER_IMAGE_TAG}"
+                    echo "Application Version: ${env.APP_VERSION}"
                 }
 
                 sh '''
-                    mvn -B versions:set \
-                      -DnewVersion="$APP_VERSION" \
+                    mvn versions:set \
+                      -DnewVersion=${APP_VERSION} \
                       -DgenerateBackupPoms=false
+
+                    mvn help:evaluate \
+                      -Dexpression=project.version \
+                      -q -DforceStdout
                 '''
             }
         }
 
         stage('Build') {
             steps {
-                sh 'mvn clean package'
+                sh 'mvn clean package -DskipTests'
             }
         }
 
@@ -82,21 +87,19 @@ pipeline {
 
         stage('Archive JAR') {
             steps {
-                archiveArtifacts artifacts: 'target/*.jar',
-                                 fingerprint: true
+                archiveArtifacts(
+                    artifacts: 'target/*.jar',
+                    fingerprint: true
+                )
             }
         }
 
         stage('Upload JAR to S3') {
             steps {
                 sh '''
-                    set -e
-
-                    aws s3 cp \
-                      "target/java-microservice-${APP_VERSION}.jar" \
-                      "s3://java-microservice-artifacts-2026-290952/java-microservice/${APP_VERSION}/java-microservice-${APP_VERSION}.jar" \
-                      --region "$AWS_REGION" \
-                      --only-show-errors
+                    aws s3 cp target/java-microservice-${APP_VERSION}.jar \
+                    s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/ \
+                    --region ${AWS_REGION}
                 '''
             }
         }
@@ -104,14 +107,11 @@ pipeline {
         stage('Login to Amazon ECR') {
             steps {
                 sh '''
-                    set -e
-
                     aws ecr get-login-password \
-                      --region "$AWS_REGION" |
+                    --region ${AWS_REGION} | \
                     docker login \
-                      --username AWS \
-                      --password-stdin \
-                      "$ECR_REGISTRY"
+                    --username AWS \
+                    --password-stdin ${ECR_REGISTRY}
                 '''
             }
         }
@@ -119,13 +119,10 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
-                    set -e
-
                     docker build \
-                      --build-arg APP_VERSION="$APP_VERSION" \
-                      -t "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION" \
-                      -t "$ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG" \
-                      .
+                    -t ${ECR_REGISTRY}/${ECR_REPO}:${APP_VERSION} \
+                    -t ${ECR_REGISTRY}/${ECR_REPO}:${DOCKER_IMAGE_TAG} \
+                    .
                 '''
             }
         }
@@ -133,31 +130,74 @@ pipeline {
         stage('Push Docker Image to ECR') {
             steps {
                 sh '''
-                    set -e
+                    docker push ${ECR_REGISTRY}/${ECR_REPO}:${APP_VERSION}
 
-                    docker push \
-                      "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION"
-
-                    docker push \
-                      "$ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG"
+                    docker push ${ECR_REGISTRY}/${ECR_REPO}:${DOCKER_IMAGE_TAG}
                 '''
             }
         }
     }
 
     post {
+
         success {
-            echo "Java Microservice ${env.APP_VERSION} pipeline completed successfully!"
-            echo "Docker release tag: ${env.APP_VERSION}"
-            echo "Docker build tag: ${env.DOCKER_IMAGE_TAG}"
+            echo 'Java Microservice pipeline completed successfully!'
+
+            emailext(
+                to: 'swapnilpawar641@gmail.com',
+                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                mimeType: 'text/html',
+                body: """
+                    <h2 style="color:green;">Pipeline Successful</h2>
+
+                    <p><b>Job:</b> ${env.JOB_NAME}</p>
+                    <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
+                    <p><b>Release Version:</b> ${env.APP_VERSION}</p>
+                    <p><b>Status:</b> SUCCESS</p>
+
+                    <p>
+                        <b>Docker Image:</b>
+                        ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.APP_VERSION}
+                    </p>
+
+                    <p>
+                        <a href="${env.BUILD_URL}">
+                            View Jenkins Build
+                        </a>
+                    </p>
+                """
+            )
         }
 
         failure {
             echo 'Java Microservice pipeline failed!'
+
+            emailext(
+                to: 'swapnilpawar641@gmail.com',
+                subject: "FAILURE: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                mimeType: 'text/html',
+                body: """
+                    <h2 style="color:red;">Pipeline Failed</h2>
+
+                    <p><b>Job:</b> ${env.JOB_NAME}</p>
+                    <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
+                    <p><b>Status:</b> FAILURE</p>
+
+                    <p>
+                        <a href="${env.BUILD_URL}console">
+                            View Jenkins Console Output
+                        </a>
+                    </p>
+                """
+            )
         }
 
         always {
-            sh 'docker logout "$ECR_REGISTRY" || true'
+            sh '''
+                docker logout ${ECR_REGISTRY} || true
+            '''
+
+            echo 'Pipeline execution finished.'
         }
     }
 }
