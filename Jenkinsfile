@@ -6,8 +6,8 @@ pipeline {
     parameters {
         string(
             name: 'RELEASE_VERSION',
-            defaultValue: '2.3.0',
-            description: 'Enter application version (example: 2.3.0)'
+            defaultValue: '1.0.1',
+            description: 'Enter release version (example: 1.0.1)'
         )
     }
 
@@ -20,25 +20,32 @@ pipeline {
         AWS_REGION = 'ap-southeast-2'
         ECR_REGISTRY = '828874705664.dkr.ecr.ap-southeast-2.amazonaws.com'
         ECR_REPOSITORY = 'java-microservice'
+
         GITHUB_REPO = 'swapnil641/java-microservice'
         GITHUB_BRANCH = 'dev'
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 echo 'Source code is checked out on the temporary EC2 agent'
             }
         }
 
-        stage('Verify Docker on EC2 Agent') {
+        stage('Verify Build Environment') {
             steps {
                 sh '''
                     set -e
+
+                    echo "Checking Docker..."
                     docker --version
                     docker info
+
+                    echo "Checking Python..."
                     python3 --version
-                    echo "Docker and Python verification successful!"
+
+                    echo "Environment verification successful!"
                 '''
             }
         }
@@ -48,18 +55,20 @@ pipeline {
                 script {
                     env.APP_VERSION = params.RELEASE_VERSION.trim()
 
-                    if (!(env.APP_VERSION ==~ /^[0-9]+\\.[0-9]+\\.[0-9]+$/)) {
-                        error('Invalid version! Use format like 2.3.0 or 2.4.1')
+                    if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
+                        error('Invalid version! Use format like 1.0.0 or 2.4.1')
                     }
 
                     env.DOCKER_IMAGE_TAG = env.APP_VERSION
 
-                    echo "Application version: ${env.APP_VERSION}"
-                    echo "GitHub Release: v${env.APP_VERSION}"
-                    echo "Docker image tag: ${env.DOCKER_IMAGE_TAG}"
+                    echo "Application Version: ${env.APP_VERSION}"
+                    echo "GitHub Release Tag: ${env.APP_VERSION}"
+                    echo "Docker Image Tag: ${env.DOCKER_IMAGE_TAG}"
                 }
 
                 sh '''
+                    set -e
+
                     mvn -B versions:set \
                       -DnewVersion="$APP_VERSION" \
                       -DgenerateBackupPoms=false
@@ -69,13 +78,19 @@ pipeline {
 
         stage('Build') {
             steps {
-                sh 'mvn clean package'
+                sh '''
+                    set -e
+                    mvn clean package
+                '''
             }
         }
 
         stage('Test') {
             steps {
-                sh 'mvn test'
+                sh '''
+                    set -e
+                    mvn test
+                '''
             }
         }
 
@@ -98,6 +113,8 @@ pipeline {
                       "s3://java-microservice-artifacts-2026-290952/java-microservice/${APP_VERSION}/java-microservice-${APP_VERSION}.jar" \
                       --region "$AWS_REGION" \
                       --only-show-errors
+
+                    echo "JAR uploaded to S3 successfully!"
                 '''
             }
         }
@@ -126,6 +143,8 @@ pipeline {
                       --build-arg APP_VERSION="$APP_VERSION" \
                       -t "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION" \
                       .
+
+                    echo "Docker image built successfully!"
                 '''
             }
         }
@@ -137,6 +156,8 @@ pipeline {
 
                     docker push \
                       "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION"
+
+                    echo "Docker image pushed successfully!"
                 '''
             }
         }
@@ -164,13 +185,18 @@ version = os.environ["APP_VERSION"]
 branch = os.environ["GITHUB_BRANCH"]
 token = os.environ["GITHUB_TOKEN"]
 
-tag = f"v{version}"
+# GitHub tag uses the exact release version.
+tag = version
+
 jar_name = f"java-microservice-{version}.jar"
 jar_path = f"target/{jar_name}"
 
 api = f"https://api.github.com/repos/{repo}"
 
-def request(url, method="GET", data=None, content_type="application/json"):
+
+def request(url, method="GET", data=None,
+            content_type="application/json"):
+
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {token}",
@@ -191,13 +217,20 @@ def request(url, method="GET", data=None, content_type="application/json"):
         body = response.read()
         return json.loads(body) if body else {}
 
-# Check whether this release already exists.
-tag_url = f"{api}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+
+# Check whether the GitHub Release already exists.
+tag_url = (
+    f"{api}/releases/tags/"
+    f"{urllib.parse.quote(tag, safe='')}"
+)
 
 try:
     release = request(tag_url)
-    print(f"Release {tag} already exists. Updating its JAR asset.")
+
+    print(f"Release {tag} already exists.")
+
 except urllib.error.HTTPError as error:
+
     if error.code != 404:
         raise
 
@@ -216,32 +249,42 @@ except urllib.error.HTTPError as error:
 
     print(f"Created GitHub Release {tag}")
 
+
 release_id = release["id"]
 
-# Remove an existing asset with the same filename before uploading.
-assets = request(f"{api}/releases/{release_id}/assets")
+
+# Remove an older JAR asset with the same filename.
+assets = request(
+    f"{api}/releases/{release_id}/assets"
+)
 
 for asset in assets:
+
     if asset["name"] == jar_name:
+
         request(
             f"{api}/releases/assets/{asset['id']}",
             method="DELETE"
         )
+
         print(f"Removed previous asset: {jar_name}")
 
-# Upload the versioned JAR.
+
+# Upload the new versioned JAR.
 upload_url = (
     f"https://uploads.github.com/repos/{repo}/releases/"
     f"{release_id}/assets?name={urllib.parse.quote(jar_name)}"
 )
 
 with open(jar_path, "rb") as jar:
+
     request(
         upload_url,
         method="POST",
         data=jar.read(),
         content_type="application/java-archive"
     )
+
 
 print(f"Successfully uploaded {jar_name}")
 print(f"GitHub Release: {tag}")
@@ -253,6 +296,7 @@ PY
     }
 
     post {
+
         success {
             echo "Java Microservice ${env.APP_VERSION} pipeline completed successfully!"
 
@@ -267,12 +311,15 @@ PY
                     <p><b>Job:</b> ${env.JOB_NAME}</p>
                     <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
                     <p><b>Application Version:</b> ${env.APP_VERSION}</p>
-                    <p><b>GitHub Release:</b> v${env.APP_VERSION}</p>
+
+                    <p><b>GitHub Release:</b> ${env.APP_VERSION}</p>
                     <p><b>JAR:</b> java-microservice-${env.APP_VERSION}.jar</p>
-                    <p><b>Docker Image:</b> ${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.APP_VERSION}</p>
+
+                    <p><b>Docker Image:</b>
+                    ${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.APP_VERSION}</p>
 
                     <p>
-                        <a href="https://github.com/${env.GITHUB_REPO}/releases/tag/v${env.APP_VERSION}">
+                        <a href="https://github.com/${env.GITHUB_REPO}/releases/tag/${env.APP_VERSION}">
                             View GitHub Release
                         </a>
                     </p>
@@ -313,6 +360,7 @@ PY
 
         always {
             sh 'docker logout "$ECR_REGISTRY" || true'
+
             echo 'Pipeline execution finished.'
         }
     }
