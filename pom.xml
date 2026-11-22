@@ -15,41 +15,18 @@
     <groupId>com.example</groupId>
     <artifactId>java-microservice</artifactId>
     <version>2.2.0</version>
+    <packaging>pom</packaging>
 
     <name>java-microservice</name>
-    <description>My first Java microservice</description>
+    <description>Multi-module Java Microservices Project</description>
+
+    <modules>
+    <module>hello-service</module>
+    <module>user-service</module>
+    </modules>
 
     <properties>
         <java.version>17</java.version>
     </properties>
-
-    <dependencies>
-
-        <!-- Spring Boot Web -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-
-        <!-- Spring Boot Testing: JUnit 5, Mockito, Spring Test -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-    </dependencies>
-
-    <build>
-        <plugins>
-
-            <!-- Spring Boot Maven Plugin -->
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-            </plugin>
-
-        </plugins>
-    </build>
 
 </project>
