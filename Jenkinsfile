@@ -1,3 +1,4 @@
+
 pipeline {
     agent {
         label 'ec2-java-agent'
@@ -6,8 +7,8 @@ pipeline {
     parameters {
         string(
             name: 'RELEASE_VERSION',
-            defaultValue: '1.0.1',
-            description: 'Enter release version (example: 1.0.1)'
+            defaultValue: '2.2.1',
+            description: 'Enter release version (example: 2.2.1)'
         )
     }
 
@@ -19,17 +20,21 @@ pipeline {
     environment {
         AWS_REGION = 'ap-southeast-2'
         ECR_REGISTRY = '828874705664.dkr.ecr.ap-southeast-2.amazonaws.com'
-        ECR_REPOSITORY = 'java-microservice'
+
+        HELLO_ECR_REPOSITORY = 'hello-service'
+        USER_ECR_REPOSITORY = 'user-service'
 
         GITHUB_REPO = 'swapnil641/java-microservice'
         GITHUB_BRANCH = 'dev'
+
+        S3_BUCKET = 'java-microservice-artifacts-2026-290952'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo 'Source code is checked out on the temporary EC2 agent'
+                echo 'Source code is checked out on the EC2 agent'
             }
         }
 
@@ -38,9 +43,18 @@ pipeline {
                 sh '''
                     set -e
 
+                    echo "Checking Java..."
+                    java -version
+
+                    echo "Checking Maven..."
+                    mvn -version
+
                     echo "Checking Docker..."
                     docker --version
                     docker info
+
+                    echo "Checking AWS CLI..."
+                    aws --version
 
                     echo "Checking Python..."
                     python3 --version
@@ -56,14 +70,10 @@ pipeline {
                     env.APP_VERSION = params.RELEASE_VERSION.trim()
 
                     if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
-                        error('Invalid version! Use format like 1.0.0 or 2.4.1')
+                        error('Invalid version! Use format like 2.2.1')
                     }
 
-                    env.DOCKER_IMAGE_TAG = env.APP_VERSION
-
                     echo "Application Version: ${env.APP_VERSION}"
-                    echo "GitHub Release Tag: ${env.APP_VERSION}"
-                    echo "Docker Image Tag: ${env.DOCKER_IMAGE_TAG}"
                 }
 
                 sh '''
@@ -71,50 +81,89 @@ pipeline {
 
                     mvn -B versions:set \
                       -DnewVersion="$APP_VERSION" \
-                      -DgenerateBackupPoms=false
+                      -DgenerateBackupPoms=false \
+                      -DprocessAllModules=true
+                    echo "Project versions updated successfully!"
                 '''
             }
         }
 
-        stage('Build') {
+        stage('Build and Test All Services') {
             steps {
                 sh '''
                     set -e
-                    mvn clean package
+
+                    mvn clean verify
+
+                    echo "All services built and tested successfully!"
                 '''
             }
         }
 
-        stage('Test') {
+        stage('Verify Service JARs') {
             steps {
                 sh '''
                     set -e
-                    mvn test
+
+                    HELLO_JAR="hello-service/target/hello-service-${APP_VERSION}.jar"
+                    USER_JAR="user-service/target/user-service-${APP_VERSION}.jar"
+
+                    test -f "$HELLO_JAR"
+                    test -f "$USER_JAR"
+
+                    echo "Hello Service JAR:"
+                    ls -lh "$HELLO_JAR"
+
+                    echo "User Service JAR:"
+                    ls -lh "$USER_JAR"
                 '''
             }
         }
 
-        stage('Archive JAR') {
+        stage('Archive Service JARs') {
             steps {
                 archiveArtifacts(
-                    artifacts: 'target/*.jar',
+                    artifacts: 'hello-service/target/*.jar,user-service/target/*.jar',
                     fingerprint: true
                 )
             }
         }
 
-        stage('Upload JAR to S3') {
+        stage('Upload Service JARs to S3') {
             steps {
                 sh '''
                     set -e
 
+                    HELLO_JAR="hello-service/target/hello-service-${APP_VERSION}.jar"
+                    USER_JAR="user-service/target/user-service-${APP_VERSION}.jar"
+
                     aws s3 cp \
-                      "target/java-microservice-${APP_VERSION}.jar" \
-                      "s3://java-microservice-artifacts-2026-290952/java-microservice/${APP_VERSION}/java-microservice-${APP_VERSION}.jar" \
+                      "$HELLO_JAR" \
+                      "s3://${S3_BUCKET}/hello-service/${APP_VERSION}/hello-service-${APP_VERSION}.jar" \
                       --region "$AWS_REGION" \
                       --only-show-errors
 
-                    echo "JAR uploaded to S3 successfully!"
+                    aws s3 cp \
+                      "$USER_JAR" \
+                      "s3://${S3_BUCKET}/user-service/${APP_VERSION}/user-service-${APP_VERSION}.jar" \
+                      --region "$AWS_REGION" \
+                      --only-show-errors
+
+                    echo "Both service JARs uploaded to S3!"
+                '''
+            }
+        }
+
+        stage('Verify ECR Repositories') {
+            steps {
+                sh '''
+                    set -e
+
+                    aws ecr describe-repositories \
+                      --repository-names "$HELLO_ECR_REPOSITORY" "$USER_ECR_REPOSITORY" \
+                      --region "$AWS_REGION"
+
+                    echo "Both ECR repositories exist!"
                 '''
             }
         }
@@ -130,39 +179,61 @@ pipeline {
                       --username AWS \
                       --password-stdin \
                       "$ECR_REGISTRY"
+
+                    echo "ECR login successful!"
                 '''
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build Hello Service Docker Image') {
             steps {
                 sh '''
                     set -e
 
                     docker build \
                       --build-arg APP_VERSION="$APP_VERSION" \
-                      -t "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION" \
+                      -f hello-service/Dockerfile \
+                      -t "$ECR_REGISTRY/$HELLO_ECR_REPOSITORY:$APP_VERSION" \
                       .
 
-                    echo "Docker image built successfully!"
+                    echo "Hello Service Docker image built!"
                 '''
             }
         }
 
-        stage('Push Docker Image to ECR') {
+        stage('Build User Service Docker Image') {
+            steps {
+                sh '''
+                    set -e
+
+                    docker build \
+                      --build-arg APP_VERSION="$APP_VERSION" \
+                      -f user-service/Dockerfile \
+                      -t "$ECR_REGISTRY/$USER_ECR_REPOSITORY:$APP_VERSION" \
+                      .
+
+                    echo "User Service Docker image built!"
+                '''
+            }
+        }
+
+        stage('Push Docker Images to ECR') {
             steps {
                 sh '''
                     set -e
 
                     docker push \
-                      "$ECR_REGISTRY/$ECR_REPOSITORY:$APP_VERSION"
+                      "$ECR_REGISTRY/$HELLO_ECR_REPOSITORY:$APP_VERSION"
 
-                    echo "Docker image pushed successfully!"
+                    docker push \
+                      "$ECR_REGISTRY/$USER_ECR_REPOSITORY:$APP_VERSION"
+
+                    echo "Both Docker images pushed to ECR!"
                 '''
             }
         }
 
-        stage('Create GitHub Release and Upload JAR') {
+        stage('Create GitHub Release and Upload JARs') {
             steps {
                 withCredentials([
                     string(
@@ -185,13 +256,8 @@ version = os.environ["APP_VERSION"]
 branch = os.environ["GITHUB_BRANCH"]
 token = os.environ["GITHUB_TOKEN"]
 
-# GitHub tag uses the exact release version.
-tag = version
-
-jar_name = f"java-microservice-{version}.jar"
-jar_path = f"target/{jar_name}"
-
 api = f"https://api.github.com/repos/{repo}"
+tag = version
 
 
 def request(url, method="GET", data=None,
@@ -218,7 +284,7 @@ def request(url, method="GET", data=None,
         return json.loads(body) if body else {}
 
 
-# Check whether the GitHub Release already exists.
+# Find or create the GitHub Release.
 tag_url = (
     f"{api}/releases/tags/"
     f"{urllib.parse.quote(tag, safe='')}"
@@ -226,7 +292,6 @@ tag_url = (
 
 try:
     release = request(tag_url)
-
     print(f"Release {tag} already exists.")
 
 except urllib.error.HTTPError as error:
@@ -237,7 +302,7 @@ except urllib.error.HTTPError as error:
     payload = {
         "tag_name": tag,
         "target_commitish": branch,
-        "name": f"Java Microservice {tag}",
+        "name": f"Java Microservices {tag}",
         "generate_release_notes": True
     }
 
@@ -253,41 +318,58 @@ except urllib.error.HTTPError as error:
 release_id = release["id"]
 
 
-# Remove an older JAR asset with the same filename.
+# Upload both service JARs.
+artifacts = [
+    (
+        f"hello-service/target/hello-service-{version}.jar",
+        f"hello-service-{version}.jar"
+    ),
+    (
+        f"user-service/target/user-service-{version}.jar",
+        f"user-service-{version}.jar"
+    )
+]
+
+# Get existing release assets.
 assets = request(
     f"{api}/releases/{release_id}/assets"
 )
 
-for asset in assets:
+for jar_path, jar_name in artifacts:
 
-    if asset["name"] == jar_name:
+    if not os.path.isfile(jar_path):
+        raise FileNotFoundError(jar_path)
 
-        request(
-            f"{api}/releases/assets/{asset['id']}",
-            method="DELETE"
-        )
+    # Remove an existing asset with the same filename.
+    for asset in assets:
 
-        print(f"Removed previous asset: {jar_name}")
+        if asset["name"] == jar_name:
 
+            request(
+                f"{api}/releases/assets/{asset['id']}",
+                method="DELETE"
+            )
 
-# Upload the new versioned JAR.
-upload_url = (
-    f"https://uploads.github.com/repos/{repo}/releases/"
-    f"{release_id}/assets?name={urllib.parse.quote(jar_name)}"
-)
+            print(f"Removed previous asset: {jar_name}")
 
-with open(jar_path, "rb") as jar:
-
-    request(
-        upload_url,
-        method="POST",
-        data=jar.read(),
-        content_type="application/java-archive"
+    upload_url = (
+        f"https://uploads.github.com/repos/{repo}/releases/"
+        f"{release_id}/assets?name={urllib.parse.quote(jar_name)}"
     )
 
+    with open(jar_path, "rb") as jar:
 
-print(f"Successfully uploaded {jar_name}")
-print(f"GitHub Release: {tag}")
+        request(
+            upload_url,
+            method="POST",
+            data=jar.read(),
+            content_type="application/java-archive"
+        )
+
+    print(f"Uploaded {jar_name}")
+
+
+print(f"GitHub Release completed: {tag}")
 PY
                     '''
                 }
@@ -298,7 +380,7 @@ PY
     post {
 
         success {
-            echo "Java Microservice ${env.APP_VERSION} pipeline completed successfully!"
+            echo "Java Microservices pipeline ${env.APP_VERSION} completed successfully!"
 
             emailext(
                 to: 'swapnilpawar641@gmail.com',
@@ -307,16 +389,15 @@ PY
                 body: """
                     <h2 style="color:green;">Pipeline Successful!</h2>
 
-                    <p><b>Project:</b> Java Microservice</p>
-                    <p><b>Job:</b> ${env.JOB_NAME}</p>
-                    <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
-                    <p><b>Application Version:</b> ${env.APP_VERSION}</p>
+                    <p><b>Project:</b> Java Microservices</p>
+                    <p><b>Build:</b> ${env.BUILD_NUMBER}</p>
+                    <p><b>Version:</b> ${env.APP_VERSION}</p>
 
-                    <p><b>GitHub Release:</b> ${env.APP_VERSION}</p>
-                    <p><b>JAR:</b> java-microservice-${env.APP_VERSION}.jar</p>
+                    <h3>Services</h3>
+                    <p>Hello Service: ${env.ECR_REGISTRY}/${env.HELLO_ECR_REPOSITORY}:${env.APP_VERSION}</p>
+                    <p>User Service: ${env.ECR_REGISTRY}/${env.USER_ECR_REPOSITORY}:${env.APP_VERSION}</p>
 
-                    <p><b>Docker Image:</b>
-                    ${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.APP_VERSION}</p>
+                    <p><b>S3:</b> Both service JARs uploaded successfully.</p>
 
                     <p>
                         <a href="https://github.com/${env.GITHUB_REPO}/releases/tag/${env.APP_VERSION}">
@@ -334,7 +415,7 @@ PY
         }
 
         failure {
-            echo 'Java Microservice pipeline failed!'
+            echo 'Java Microservices pipeline failed!'
 
             emailext(
                 to: 'swapnilpawar641@gmail.com',
@@ -343,11 +424,10 @@ PY
                 body: """
                     <h2 style="color:red;">Pipeline Failed!</h2>
 
-                    <p><b>Project:</b> Java Microservice</p>
+                    <p><b>Project:</b> Java Microservices</p>
                     <p><b>Job:</b> ${env.JOB_NAME}</p>
                     <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
-                    <p><b>Build Status:</b> FAILURE</p>
-                    <p><b>Application Version:</b> ${env.APP_VERSION ?: 'Not available'}</p>
+                    <p><b>Version:</b> ${env.APP_VERSION ?: 'Not available'}</p>
 
                     <p>
                         <a href="${env.BUILD_URL}console">
