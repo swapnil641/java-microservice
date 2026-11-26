@@ -1,4 +1,3 @@
-
 pipeline {
     agent {
         label 'ec2-java-agent'
@@ -83,6 +82,7 @@ pipeline {
                       -DnewVersion="$APP_VERSION" \
                       -DgenerateBackupPoms=false \
                       -DprocessAllModules=true
+
                     echo "Project versions updated successfully!"
                 '''
             }
@@ -233,6 +233,26 @@ pipeline {
             }
         }
 
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'java-microservice-ssh-key',
+                        keyFileVariable: 'SSH_KEY_FILE',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        echo "Starting Kubernetes deployment..."
+
+                        bash scripts/deploy-kubernetes.sh
+                    '''
+                }
+            }
+        }
+
         stage('Create GitHub Release and Upload JARs') {
             steps {
                 withCredentials([
@@ -330,10 +350,12 @@ artifacts = [
     )
 ]
 
+
 # Get existing release assets.
 assets = request(
     f"{api}/releases/{release_id}/assets"
 )
+
 
 for jar_path, jar_name in artifacts:
 
@@ -398,6 +420,7 @@ PY
                     <p>User Service: ${env.ECR_REGISTRY}/${env.USER_ECR_REPOSITORY}:${env.APP_VERSION}</p>
 
                     <p><b>S3:</b> Both service JARs uploaded successfully.</p>
+                    <p><b>Kubernetes:</b> Deployment stage completed successfully.</p>
 
                     <p>
                         <a href="https://github.com/${env.GITHUB_REPO}/releases/tag/${env.APP_VERSION}">
