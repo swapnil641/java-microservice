@@ -53,12 +53,13 @@ metadata:
   name: hello-service
   namespace: java-microservices
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: hello-service
   ports:
     - port: 8081
       targetPort: 8081
+      nodePort: 30081
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -110,9 +111,10 @@ metadata:
   name: user-service
   namespace: java-microservices
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: user-service
   ports:
     - port: 8082
       targetPort: 8082
+      nodePort: 30082
