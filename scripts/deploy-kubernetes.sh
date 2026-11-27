@@ -11,53 +11,38 @@ set +x
 : "${SSH_USER:?Missing SSH_USER}"
 
 WORK_DIR="$(mktemp -d)"
-REMOTE_DIR="/tmp/java-microservices-deploy-${BUILD_NUMBER:-manual}"
-KNOWN_HOSTS="$WORK_DIR/known_hosts"
 
 cleanup() {
-    if [[ -n "${K8S_PRIVATE_IP:-}" && -n "${SSH_KEY_FILE:-}" && -n "${SSH_USER:-}" ]]; then
-        ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-            "$SSH_USER@$K8S_PRIVATE_IP" \
-            "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
-    fi
     rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
 
-SSH_OPTS=(
-    -o IdentitiesOnly=yes
-    -o BatchMode=yes
-    -o StrictHostKeyChecking=accept-new
-    -o "UserKnownHostsFile=$KNOWN_HOSTS"
-    -o ConnectTimeout=10
-)
+echo "Checking required tools..."
 
-echo "Discovering Kubernetes control-plane EC2 instance..."
+for tool in aws python3 git ansible-playbook; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "ERROR: Required tool not found: $tool"
+        exit 1
+    }
+done
 
-K8S_PRIVATE_IP="$(
-    aws ec2 describe-instances \
-        --region "$AWS_REGION" \
-        --filters \
-          "Name=tag:Name,Values=kube-control-plane" \
-          "Name=instance-state-name,Values=running" \
-        --query 'Reservations[].Instances[].PrivateIpAddress' \
-        --output text
-)"
+echo "Cloning Kubernetes Ansible repository..."
 
-if [[ -z "$K8S_PRIVATE_IP" || "$K8S_PRIVATE_IP" == "None" ||
-      "$K8S_PRIVATE_IP" == *$'\t'* || "$K8S_PRIVATE_IP" == *' '* ]]; then
-    echo "ERROR: Expected exactly one running Kubernetes control-plane instance."
-    exit 1
-fi
+GIT_TERMINAL_PROMPT=0 git clone \
+    --depth 1 \
+    --branch main \
+    https://github.com/swapnil641/kubernetes-ansible-configuration.git \
+    "$WORK_DIR/ansible"
 
-echo "Kubernetes control-plane: $K8S_PRIVATE_IP"
+echo "Discovering Kubernetes control-plane..."
 
-echo "Testing SSH connection..."
+bash "$WORK_DIR/ansible/scripts/generate-inventory.sh" \
+    > "$WORK_DIR/dynamic-inventory.ini"
 
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" "hostname"
+echo "Dynamic inventory generated:"
+cat "$WORK_DIR/dynamic-inventory.ini"
 
-echo "Preparing versioned Kubernetes manifests..."
+echo "Preparing versioned Kubernetes manifest..."
 
 cp k8s/microservices.yaml "$WORK_DIR/microservices.yaml"
 
@@ -69,7 +54,7 @@ sed -i \
     "s|image: user-service:latest|image: $ECR_REGISTRY/$USER_ECR_REPOSITORY:$APP_VERSION|" \
     "$WORK_DIR/microservices.yaml"
 
-echo "Generating temporary ECR authentication file..."
+echo "Generating ECR authentication configuration..."
 
 ECR_PASSWORD="$(aws ecr get-login-password --region "$AWS_REGION")"
 
@@ -82,7 +67,10 @@ import sys
 
 password = os.environ["ECR_PASSWORD"]
 registry = sys.argv[2]
-auth = base64.b64encode(f"AWS:{password}".encode()).decode()
+
+auth = base64.b64encode(
+    f"AWS:{password}".encode()
+).decode()
 
 config = {
     "auths": {
@@ -101,51 +89,18 @@ PY
 unset ECR_PASSWORD
 chmod 600 "$WORK_DIR/config.json"
 
-echo "Creating remote deployment directory..."
+echo "Starting Ansible Kubernetes deployment..."
 
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" \
-    "mkdir -p '$REMOTE_DIR' && chmod 700 '$REMOTE_DIR'"
+export BUILD_NUMBER="${BUILD_NUMBER:-manual}"
+export K8S_MANIFEST_SRC="$WORK_DIR/microservices.yaml"
+export ECR_DOCKER_CONFIG_SRC="$WORK_DIR/config.json"
 
-scp -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$WORK_DIR/config.json" \
-    "$WORK_DIR/microservices.yaml" \
-    "$SSH_USER@$K8S_PRIVATE_IP:$REMOTE_DIR/"
+ANSIBLE_CONFIG="$WORK_DIR/ansible/ansible.cfg" \
+ANSIBLE_HOST_KEY_CHECKING=False \
+ansible-playbook \
+    -i "$WORK_DIR/dynamic-inventory.ini" \
+    "$WORK_DIR/ansible/playbooks/deploy-microservices.yml" \
+    --private-key "$SSH_KEY_FILE" \
+    --user "$SSH_USER"
 
-echo "Creating Kubernetes namespace..."
-
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" \
-    "sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl create namespace java-microservices --dry-run=client -o yaml | sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f -"
-
-echo "Refreshing ECR image pull secret..."
-
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" \
-    "sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl create secret generic ecr-registry-secret --namespace java-microservices --from-file=.dockerconfigjson=$REMOTE_DIR/config.json --type=kubernetes.io/dockerconfigjson --dry-run=client -o yaml | sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f -"
-
-echo "Applying Kubernetes manifests..."
-
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" \
-    "sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f '$REMOTE_DIR/microservices.yaml'"
-
-echo "Waiting for Hello Service rollout..."
-
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" \
-    "sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/hello-service -n java-microservices --timeout=240s"
-
-echo "Waiting for User Service rollout..."
-
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" \
-    "sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/user-service -n java-microservices --timeout=240s"
-
-echo "Checking deployed Kubernetes resources..."
-
-ssh -i "$SSH_KEY_FILE" "${SSH_OPTS[@]}" \
-    "$SSH_USER@$K8S_PRIVATE_IP" \
-    "sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get deployments,pods,services -n java-microservices"
-
-echo "Deployment completed successfully!"
+echo "Java microservices deployment completed successfully!"
