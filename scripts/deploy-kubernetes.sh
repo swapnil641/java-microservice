@@ -41,6 +41,17 @@ echo "======================================"
 echo "Checking required tools..."
 echo "======================================"
 
+if ! command -v ansible-playbook >/dev/null 2>&1; then
+    echo "Ansible not found. Installing Ansible on temporary agent..."
+
+    sudo apt-get update
+    sudo apt-get install -y ansible
+
+    echo "Ansible installation completed."
+fi
+
+ansible-playbook --version
+
 for tool in aws python3 git ansible-playbook; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "ERROR: Required tool not found: $tool"
