@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 set -Eeuo pipefail
 set +x
@@ -17,7 +18,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo "======================================"
+echo "Jenkins Agent Environment Diagnostics"
+echo "======================================"
+
+echo "Hostname: $(hostname)"
+echo "User: $(whoami)"
+echo "PATH: $PATH"
+
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+
+echo "Ansible executable:"
+command -v ansible-playbook || true
+
+echo "Python version:"
+python3 --version
+
+echo "Ansible Python packages:"
+python3 -m pip show ansible ansible-core || true
+
+echo "======================================"
 echo "Checking required tools..."
+echo "======================================"
 
 for tool in aws python3 git ansible-playbook; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -25,6 +47,8 @@ for tool in aws python3 git ansible-playbook; do
         exit 1
     }
 done
+
+echo "All required tools are available."
 
 echo "Cloning Kubernetes Ansible repository..."
 
