@@ -3,6 +3,10 @@
 set -Eeuo pipefail
 set +x
 
+# ==========================================
+# 1. Validate required Jenkins environment
+# ==========================================
+
 : "${AWS_REGION:?Missing AWS_REGION}"
 : "${ECR_REGISTRY:?Missing ECR_REGISTRY}"
 : "${HELLO_ECR_REPOSITORY:?Missing HELLO_ECR_REPOSITORY}"
@@ -10,13 +14,21 @@ set +x
 : "${APP_VERSION:?Missing APP_VERSION}"
 : "${SSH_KEY_FILE:?Missing SSH_KEY_FILE}"
 : "${SSH_USER:?Missing SSH_USER}"
+: "${GITHUB_TOKEN:?Missing Jenkins GitHub token}"
+
+# ==========================================
+# 2. Create temporary working directory
+# ==========================================
 
 WORK_DIR="$(mktemp -d)"
 
 cleanup() {
     rm -rf "$WORK_DIR"
 }
+
 trap cleanup EXIT
+
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 echo "======================================"
 echo "Jenkins Agent Environment Diagnostics"
@@ -24,25 +36,15 @@ echo "======================================"
 
 echo "Hostname: $(hostname)"
 echo "User: $(whoami)"
-echo "PATH: $PATH"
-
-export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
-
-echo "Ansible executable:"
-command -v ansible-playbook || true
-
 echo "Python version:"
 python3 --version
 
-echo "Ansible Python packages:"
-python3 -m pip show ansible ansible-core || true
-
-echo "======================================"
-echo "Checking required tools..."
-echo "======================================"
+# ==========================================
+# 3. Install Ansible if not available
+# ==========================================
 
 if ! command -v ansible-playbook >/dev/null 2>&1; then
-    echo "Ansible not found. Installing Ansible on temporary agent..."
+    echo "Ansible not found. Installing Ansible..."
 
     sudo apt-get update
     sudo apt-get install -y ansible
@@ -50,24 +52,63 @@ if ! command -v ansible-playbook >/dev/null 2>&1; then
     echo "Ansible installation completed."
 fi
 
+echo "Ansible version:"
 ansible-playbook --version
 
+# ==========================================
+# 4. Verify required tools
+# ==========================================
+
+echo "Checking required tools..."
+
 for tool in aws python3 git ansible-playbook; do
-    command -v "$tool" >/dev/null 2>&1 || {
+    if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: Required tool not found: $tool"
         exit 1
-    }
+    fi
 done
 
 echo "All required tools are available."
 
-echo "Cloning Kubernetes Ansible repository..."
+# ==========================================
+# 5. Clone private Ansible repository
+# ==========================================
 
-GIT_TERMINAL_PROMPT=0 git clone \
+echo "Cloning private Kubernetes Ansible repository..."
+
+cat > "$WORK_DIR/git-askpass.sh" <<'EOF'
+#!/usr/bin/env bash
+
+case "$1" in
+    *Username*)
+        printf '%s\n' "x-access-token"
+        ;;
+    *Password*)
+        printf '%s\n' "$GITHUB_TOKEN"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOF
+
+chmod 700 "$WORK_DIR/git-askpass.sh"
+
+GIT_TERMINAL_PROMPT=0 \
+GIT_ASKPASS="$WORK_DIR/git-askpass.sh" \
+git clone \
     --depth 1 \
     --branch main \
     https://github.com/swapnil641/kubernetes-ansible-configuration.git \
     "$WORK_DIR/ansible"
+
+rm -f "$WORK_DIR/git-askpass.sh"
+
+echo "Ansible repository cloned successfully."
+
+# ==========================================
+# 6. Discover Kubernetes control-plane
+# ==========================================
 
 echo "Discovering Kubernetes control-plane..."
 
@@ -77,7 +118,11 @@ bash "$WORK_DIR/ansible/scripts/generate-inventory.sh" \
 echo "Dynamic inventory generated:"
 cat "$WORK_DIR/dynamic-inventory.ini"
 
-echo "Preparing versioned Kubernetes manifest..."
+# ==========================================
+# 7. Prepare versioned Kubernetes manifests
+# ==========================================
+
+echo "Preparing Kubernetes manifests..."
 
 cp k8s/microservices.yaml "$WORK_DIR/microservices.yaml"
 
@@ -88,6 +133,12 @@ sed -i \
 sed -i \
     "s|image: user-service:latest|image: $ECR_REGISTRY/$USER_ECR_REPOSITORY:$APP_VERSION|" \
     "$WORK_DIR/microservices.yaml"
+
+echo "Kubernetes manifests prepared."
+
+# ==========================================
+# 8. Generate ECR authentication
+# ==========================================
 
 echo "Generating ECR authentication configuration..."
 
@@ -122,7 +173,14 @@ with open(sys.argv[1], "w") as file:
 PY
 
 unset ECR_PASSWORD
+
 chmod 600 "$WORK_DIR/config.json"
+
+echo "ECR authentication configuration generated."
+
+# ==========================================
+# 9. Execute Ansible Kubernetes deployment
+# ==========================================
 
 echo "Starting Ansible Kubernetes deployment..."
 
@@ -138,4 +196,10 @@ ansible-playbook \
     --private-key "$SSH_KEY_FILE" \
     --user "$SSH_USER"
 
-echo "Java microservices deployment completed successfully!"
+# ==========================================
+# 10. Deployment completed
+# ==========================================
+
+echo "======================================"
+echo "Java Microservices Deployment Successful"
+echo "======================================"

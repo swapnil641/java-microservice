@@ -240,6 +240,10 @@ pipeline {
                         credentialsId: 'java-microservice-ssh-key',
                         keyFileVariable: 'SSH_KEY_FILE',
                         usernameVariable: 'SSH_USER'
+                    ),
+                    string(
+                        credentialsId: 'github-release-token',
+                        variable: 'GITHUB_TOKEN'
                     )
                 ]) {
                     sh '''
